@@ -28,6 +28,7 @@ import org.apache.paimon.CoreOptions;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.transaction.IsolationLevel.READ_COMMITTED;
 import static io.trino.spi.transaction.IsolationLevel.checkConnectorSupports;
 import static java.util.Objects.requireNonNull;
@@ -41,6 +42,7 @@ public class TrinoConnector implements Connector {
     private final TrinoMetadataBase trinoMetadata;
     private final TrinoSplitManagerBase trinoSplitManager;
     private final TrinoPageSourceProvider trinoPageSourceProvider;
+    private final List<PropertyMetadata<?>> tableProperties;
 
     public TrinoConnector(
             TrinoMetadataBase trinoMetadata,
@@ -50,6 +52,8 @@ public class TrinoConnector implements Connector {
         this.trinoSplitManager = requireNonNull(trinoSplitManager, "jmxSplitManager is null");
         this.trinoPageSourceProvider =
                 requireNonNull(trinoPageSourceProvider, "jmxRecordSetProvider is null");
+        tableProperties = new TrinoTableOptions().getTableProperties().stream()
+            .collect(toImmutableList());;
     }
 
     @Override
@@ -88,5 +92,10 @@ public class TrinoConnector implements Connector {
                         null,
                         true)
         );
+    }
+
+    @Override
+    public List<PropertyMetadata<?>> getTableProperties() {
+        return tableProperties;
     }
 }

@@ -18,12 +18,14 @@
 
 package org.apache.paimon.trino;
 
+import io.trino.spi.security.TrinoPrincipal;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
-import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.schema.Schema;
+import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.utils.InstantiationUtil;
 
 import io.trino.spi.connector.Assignment;
@@ -41,6 +43,7 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.predicate.TupleDomain;
+import org.apache.paimon.utils.StringUtils;
 
 
 import java.io.IOException;
@@ -54,9 +57,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
+import static org.apache.flink.shaded.guava30.com.google.common.base.Preconditions.checkArgument;
 
 /** Trino {@link ConnectorMetadata}. */
 public abstract class TrinoMetadataBase implements ConnectorMetadata {
@@ -74,6 +79,33 @@ public abstract class TrinoMetadataBase implements ConnectorMetadata {
 
     private List<String> listSchemaNames() {
         return catalog.listDatabases();
+    }
+
+    @Override
+    public void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties, TrinoPrincipal owner) {
+        checkArgument(
+            !StringUtils.isNullOrWhitespaceOnly(schemaName),
+            "schemaName cannot be null or empty");
+
+        try {
+            catalog.createDatabase(schemaName, true);
+        } catch (Catalog.DatabaseAlreadyExistException e) {
+            throw new RuntimeException(format("database already existed: '%s'", schemaName));
+        }
+    }
+
+    @Override
+    public void dropSchema(ConnectorSession session, String schemaName) {
+        checkArgument(
+            !StringUtils.isNullOrWhitespaceOnly(schemaName),
+            "schemaName cannot be null or empty");
+        try {
+            catalog.dropDatabase(schemaName, false, true);
+        } catch (Catalog.DatabaseNotEmptyException e) {
+            throw new RuntimeException(format("database is not empty: '%s'", schemaName));
+        } catch (Catalog.DatabaseNotExistException e) {
+            throw new RuntimeException(format("database not exists: '%s'", schemaName));
+        }
     }
 
     @Override
@@ -131,6 +163,83 @@ public abstract class TrinoMetadataBase implements ConnectorMetadata {
     }
 
     @Override
+    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting) {
+        SchemaTableName table = tableMetadata.getTable();
+        Identifier identifier = Identifier.create(table.getSchemaName(), table.getTableName());
+
+        try {
+            catalog.createTable(identifier, prepareSchema(tableMetadata), false);
+        } catch (Catalog.DatabaseNotExistException e) {
+            throw new RuntimeException(format("database not exists: '%s'", table.getSchemaName()));
+        } catch (Catalog.TableAlreadyExistException e) {
+            throw new RuntimeException(format("table already existed: '%s'", table.getTableName()));
+        }
+    }
+
+    @Override
+    public void setTableProperties(ConnectorSession session, ConnectorTableHandle tableHandle, Map<String, Optional<Object>> properties) {
+        TrinoTableHandle trinoTableHandle = (TrinoTableHandle) tableHandle;
+        Identifier identifier = new Identifier(trinoTableHandle.getSchemaName(), trinoTableHandle.getTableName());
+        List<SchemaChange> changes = new ArrayList<>();
+        Map<String, String> options = properties.entrySet().stream()
+            .collect(toMap(Map.Entry::getKey, e -> (String) e.getValue().get()));
+        options.forEach((key, value) -> changes.add(SchemaChange.setOption(key, value)));
+        // TODO: remove options, SET PROPERTIES x = DEFAULT
+        try {
+            catalog.alterTable(identifier,changes,false);
+        } catch (Catalog.TableNotExistException e) {
+            throw new RuntimeException(format("table not exists: '%s'", trinoTableHandle.getTableName()));
+        }
+    }
+
+    private Schema prepareSchema(ConnectorTableMetadata tableMetadata) {
+        Map<String, Object> properties = new HashMap<>(tableMetadata.getProperties());
+        Schema.Builder builder =
+            Schema.newBuilder()
+                .primaryKey(TrinoTableOptions.getPrimaryKeys(properties))
+                .partitionKeys(TrinoTableOptions.getPartitionedKeys(properties));
+
+        for (ColumnMetadata column : tableMetadata.getColumns()) {
+            builder.column(
+                column.getName(),
+                TrinoTypeUtils.toPaimonType(column.getType()),
+                column.getComment());
+        }
+
+        TrinoTableOptionUtils.buildOptions(builder, properties);
+
+        return builder.build();
+    }
+
+    @Override
+    public void renameTable(ConnectorSession session, ConnectorTableHandle tableHandle, SchemaTableName newTableName) {
+        TrinoTableHandle oldTableHandle = (TrinoTableHandle) tableHandle;
+        try {
+            catalog.renameTable(
+                new Identifier(oldTableHandle.getSchemaName(), oldTableHandle.getTableName()),
+                new Identifier(newTableName.getSchemaName(), newTableName.getTableName()),
+                false);
+        } catch (Catalog.TableNotExistException e) {
+            throw new RuntimeException(format("table not exists: '%s'", oldTableHandle.getTableName()));
+        } catch (Catalog.TableAlreadyExistException e) {
+            throw new RuntimeException(format("table already existed: '%s'", newTableName.getTableName()));
+        }
+    }
+
+    @Override
+    public void dropTable(ConnectorSession session, ConnectorTableHandle tableHandle) {
+        TrinoTableHandle trinoTableHandle = (TrinoTableHandle) tableHandle;
+        try {
+            catalog.dropTable(
+                new Identifier(
+                    trinoTableHandle.getSchemaName(), trinoTableHandle.getTableName()),
+                false);
+        } catch (Catalog.TableNotExistException e) {
+            throw new RuntimeException(format("table not exists: '%s'", trinoTableHandle.getTableName()));
+        }
+    }
+
+    @Override
     public Map<String, ColumnHandle> getColumnHandles(
             ConnectorSession session, ConnectorTableHandle tableHandle) {
         TrinoTableHandle table = (TrinoTableHandle) tableHandle;
@@ -160,6 +269,47 @@ public abstract class TrinoMetadataBase implements ConnectorMetadata {
         return tableNames.stream().collect(toMap(
                 Function.identity(),
                 table -> getTableHandle(session, table).columnMetadatas()));
+    }
+
+    @Override
+    public void addColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnMetadata column) {
+        TrinoTableHandle trinoTableHandle = (TrinoTableHandle) tableHandle;
+        Identifier identifier = new Identifier(trinoTableHandle.getSchemaName(), trinoTableHandle.getTableName());
+        List<SchemaChange> changes = new ArrayList<>();
+        changes.add(SchemaChange.addColumn(column.getName(),TrinoTypeUtils.toPaimonType(column.getType())));
+        try {
+            catalog.alterTable(identifier,changes,false);
+        } catch (Catalog.TableNotExistException e) {
+            throw new RuntimeException(format("table not exists: '%s'", trinoTableHandle.getTableName()));
+        }
+    }
+
+    @Override
+    public void renameColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle source, String target) {
+        TrinoTableHandle trinoTableHandle = (TrinoTableHandle) tableHandle;
+        Identifier identifier = new Identifier(trinoTableHandle.getSchemaName(), trinoTableHandle.getTableName());
+        TrinoColumnHandle trinoColumnHandle = (TrinoColumnHandle) source;
+        List<SchemaChange> changes = new ArrayList<>();
+        changes.add(SchemaChange.renameColumn(trinoColumnHandle.getColumnName(),target));
+        try {
+            catalog.alterTable(identifier,changes,false);
+        } catch (Catalog.TableNotExistException e) {
+            throw new RuntimeException(format("table not exists: '%s'", trinoTableHandle.getTableName()));
+        }
+    }
+
+    @Override
+    public void dropColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column) {
+        TrinoTableHandle trinoTableHandle = (TrinoTableHandle) tableHandle;
+        Identifier identifier = new Identifier(trinoTableHandle.getSchemaName(), trinoTableHandle.getTableName());
+        TrinoColumnHandle trinoColumnHandle = (TrinoColumnHandle) column;
+        List<SchemaChange> changes = new ArrayList<>();
+        changes.add(SchemaChange.dropColumn(trinoColumnHandle.getColumnName()));
+        try {
+            catalog.alterTable(identifier,changes,false);
+        } catch (Catalog.TableNotExistException e) {
+            throw new RuntimeException(format("table not exists: '%s'", trinoTableHandle.getTableName()));
+        }
     }
 
     @Override

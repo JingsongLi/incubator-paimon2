@@ -141,6 +141,15 @@ public class TestTrinoITCase extends AbstractTestQueryFramework {
             commit.commit(0, writer.prepareCommit(true, 0));
         }
 
+        Path tablePath5 = new Path(warehouse, "default.db/t5");
+        SimpleTableTestHelper testHelper5 = createTestHelper(tablePath5);
+        testHelper5.write(GenericRow.of(1, 2L, fromString("1"), fromString("1")));
+        testHelper5.write(GenericRow.of(3, 4L, fromString("2"), fromString("2")));
+        testHelper5.commit();
+        testHelper5.write(GenericRow.of(5, 6L, fromString("3"), fromString("3")));
+        testHelper5.write(GenericRow.of(7, 8L, fromString("4"), fromString("4")));
+        testHelper5.commit();
+
         DistributedQueryRunner queryRunner = null;
         try {
             queryRunner =
@@ -210,6 +219,70 @@ public class TestTrinoITCase extends AbstractTestQueryFramework {
                         "   c bigint,\n" +
                         "   d integer\n" +
                         ")]]");
+    }
+
+    @Test
+    public void testCreateSchema() {
+        sql("CREATE SCHEMA paimon.test");
+        assertThat(sql("SHOW SCHEMAS FROM paimon")).isEqualTo("[[default], [information_schema], [test]]");
+    }
+
+    @Test
+    public void testDropSchema() {
+        sql("CREATE SCHEMA paimon.test");
+        sql("DROP SCHEMA paimon.test");
+        assertThat(sql("SHOW SCHEMAS FROM paimon")).isEqualTo("[[default], [information_schema]]");
+    }
+
+    @Test
+    public void testCreateTable() {
+        sql("CREATE TABLE orders (" +
+            "  orderkey bigint," +
+            "  orderstatus varchar," +
+            "  totalprice double," +
+            "  orderdate date" +
+            ")" +
+            "WITH (" +
+            "file_format = 'ORC'," +
+            "primary_key = ARRAY['orderkey','orderdate']," +
+            "partitioned_by = ARRAY['orderdate']," +
+            "bucket = '2'," +
+            "bucket_key = 'orderkey'," +
+            "changelog_producer = 'input'" +
+            ")");
+    }
+
+    @Test
+    public void testRenameTable() {
+        sql("ALTER TABLE paimon.default.t5 RENAME TO t6");
+        assertThat(sql("SHOW TABLES FROM paimon.default")).isEqualTo("[[t1], [t2], [t3], [t4], [t6]]");
+    }
+
+    @Test
+    public void testDropTable() {
+        sql("DROP TABLE IF EXISTS paimon.default.t5");
+        assertThat(sql("SHOW TABLES FROM paimon.default")).isEqualTo("[[t1], [t2], [t3], [t4]]");
+    }
+
+    @Test
+    public void testAddColumn() {
+        sql("ALTER TABLE paimon.default.t5 ADD COLUMN zip varchar");
+        assertThat(sql("SHOW COLUMNS FROM paimon.default.t5"))
+            .isEqualTo("[[a, integer, , ], [b, bigint, , ], [aca, varchar(1), , ], [d, char(1), , ], [zip, varchar(2147483646), , ]]");
+    }
+
+    @Test
+    public void testRenameColumn() {
+        sql("ALTER TABLE paimon.default.t5 RENAME COLUMN a to g");
+        assertThat(sql("SHOW COLUMNS FROM paimon.default.t5"))
+            .isEqualTo("[[g, integer, , ], [b, bigint, , ], [aca, varchar(1), , ], [d, char(1), , ]]");
+    }
+
+    @Test
+    public void testDropColumn() {
+        sql("ALTER TABLE paimon.default.t5 DROP COLUMN a");
+        assertThat(sql("SHOW COLUMNS FROM paimon.default.t5"))
+            .isEqualTo("[[b, bigint, , ], [aca, varchar(1), , ], [d, char(1), , ]]");
     }
 
     private String sql(String sql) {

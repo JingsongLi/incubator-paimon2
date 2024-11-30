@@ -70,7 +70,7 @@ import static java.lang.String.format;
 import static org.apache.flink.shaded.guava30.com.google.common.base.Verify.verify;
 
 /** Trino {@link ConnectorPageSource}. */
-public abstract class TrinoPageSourceBase implements ConnectorPageSource {
+public abstract class  TrinoPageSourceBase implements ConnectorPageSource {
 
     private final RecordReader<InternalRow> reader;
     private final PageBuilder pageBuilder;

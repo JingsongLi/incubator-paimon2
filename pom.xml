@@ -180,6 +180,12 @@ under the License.
                 </exclusion>
             </exclusions>
         </dependency>
+
+        <dependency>
+            <groupId>org.apache.paimon</groupId>
+            <artifactId>paimon-shade</artifactId>
+            <version>0.4-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
     <!-- Activate these profiles with -Ptrino-xxx to build and test against different Trino versions -->
